@@ -1,0 +1,3 @@
+[submodule "tinyFOC"]
+	path = tinyFOC
+	url = https://github.com/OutOfPlane/tinyFOC.git
