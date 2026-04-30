@@ -8,6 +8,8 @@
 #ifndef CONFIG_H_
 #define CONFIG_H_
 
+#define DIAGNOSTICS
+
 #define NUMBER_OF_PAS_MAGS 48
 #define limit 25
 #define timeout 3125
@@ -15,7 +17,7 @@
 #define limit_without_pas 6
 #define ADC_THROTTLE_MIN_VALUE 72
 #define ADC_THROTTLE_MAX_VALUE 172
-#define BATTERY_VOLTAGE_MIN_VALUE 148
+#define BATTERY_VOLTAGE_MIN_VALUE 47
 #define BATTERY_CURRENT_MAX_VALUE 150L
 #define PHASE_CURRENT_MAX_VALUE 500L
 #define REGEN_CURRENT_MAX_VALUE 0L
