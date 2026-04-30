@@ -1,0 +1,24 @@
+cmake_minimum_required(VERSION 3.10)
+project(tinyFOC C)
+
+# Set C standard
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+# Library from src directory
+add_subdirectory(tinyFOC/src)
+
+# Tests executable
+add_executable(main
+    main.c
+)
+target_link_libraries(main PRIVATE tinyfoc)
+
+target_compile_options(main PRIVATE 
+    "--model-large"
+    "--stack-auto"
+    "--opt-code-size"
+    "-m$(PLATFORM)" 
+    "--std-c99" 
+    "--nolospre"
+    )

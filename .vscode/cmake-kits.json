@@ -1,0 +1,6 @@
+[
+  {
+    "name": "SDCC STM8 Compiler",
+    "toolchainFile": "${workspaceFolder}/SDCC-C.cmake"
+  }
+]

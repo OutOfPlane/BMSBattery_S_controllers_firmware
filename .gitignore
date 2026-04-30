@@ -22,3 +22,4 @@ Debug
 /nbproject/private/
 /Result.log
 experimental settings/*-*.ini
+build/*

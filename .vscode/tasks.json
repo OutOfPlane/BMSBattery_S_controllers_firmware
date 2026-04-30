@@ -4,7 +4,7 @@
 		{
 			"label": "Compile",
 			"type": "shell",
-			"command": "${workspaceFolder}/Start_Compiling.bat",
+			"command": "cmake --build ${workspaceFolder} --config Debug",
 			"group": "build"
 		}
 	]
