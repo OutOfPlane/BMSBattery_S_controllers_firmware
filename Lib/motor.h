@@ -9,7 +9,6 @@
 #ifndef _MOTOR_H
 #define _MOTOR_H
 
-#include "main.h"
 #include "interrupts.h"
 
 // motor states

@@ -23,3 +23,4 @@ Debug
 /Result.log
 experimental settings/*-*.ini
 build/*
+*.hex

@@ -1,0 +1,28 @@
+# Create a library named 'stm8_periph'
+add_library(stm8_periph
+    src/stm8s_itc.c
+	src/stm8s_clk.c
+	src/stm8s_iwdg.c
+	src/stm8s_gpio.c
+	src/stm8s_exti.c
+	src/stm8s_uart2.c
+	src/stm8s_tim1.c
+	src/stm8s_tim2.c
+	src/stm8s_adc1.c
+	src/stm8s_flash.c
+    )
+
+# Tell CMake where the header files are for this library
+target_include_directories(stm8_periph PUBLIC 
+    inc
+    )
+
+target_compile_options(stm8_periph PRIVATE
+    "--model-large"
+    "--stack-auto"
+    "--opt-code-size"
+    "-mstm8"
+    "--std-c99"
+    "--nolospre"
+    "--int-long-reent"
+)

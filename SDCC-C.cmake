@@ -6,17 +6,7 @@
 # CMakeLists.txt using the project() command:
 # project(my_project C)
 
-set(CMAKE_STATIC_LIBRARY_PREFIX "")
-set(CMAKE_STATIC_LIBRARY_SUFFIX ".lib")
-set(CMAKE_SHARED_LIBRARY_PREFIX "")          # lib
-set(CMAKE_SHARED_LIBRARY_SUFFIX ".lib")          # .so
-set(CMAKE_IMPORT_LIBRARY_PREFIX )
-set(CMAKE_IMPORT_LIBRARY_SUFFIX )
-set(CMAKE_EXECUTABLE_SUFFIX ".ihx")          # intel hex file
-set(CMAKE_LINK_LIBRARY_SUFFIX ".lib")
-set(CMAKE_DL_LIBS "")
-
-set(CMAKE_C_OUTPUT_EXTENSION ".rel")
+set(CMAKE_USER_MAKE_RULES_OVERRIDE "sdcc_override.cmake")
 
 # find sdar/sdcclib as CMAKE_AR
 # since cmake may already have searched for "ar", sdar has to

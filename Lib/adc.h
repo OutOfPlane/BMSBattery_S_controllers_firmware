@@ -9,7 +9,6 @@
 #ifndef _ADC_H
 #define _ADC_H
 
-#include "main.h"
 
 #define ADC1_CHANNEL_PHASE_CURRENT_B 			ADC1_CHANNEL_5
 #define ADC1_CHANNEL_MOTOR_TOTAL_CURRENT		ADC1_CHANNEL_6

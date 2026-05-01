@@ -46,7 +46,6 @@
 #ifndef _GPIO_H_
 #define _GPIO_H_
 
-#include "main.h"
 #include "stm8s_gpio.h"
 
 #define CURRENT_PHASE_B__PIN      GPIO_PIN_5

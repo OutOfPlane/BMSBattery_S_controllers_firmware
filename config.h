@@ -10,6 +10,13 @@
 
 #define DIAGNOSTICS
 
+//new config
+#define F_CPU 16000000ul
+#define PWM_FREQUENCY 20000 //Hz
+#define PWM_PERIOD (F_CPU / PWM_FREQUENCY / 2 - 1) //div2 to account for center align pwm
+
+
+
 #define NUMBER_OF_PAS_MAGS 48
 #define limit 25
 #define timeout 3125

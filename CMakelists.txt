@@ -7,18 +7,43 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Library from src directory
 add_subdirectory(tinyFOC/src)
+add_subdirectory(StdPeriphLib)
+
+# Source files for the main executable
+file(GLOB SRCS "Lib/*.c")
 
 # Tests executable
 add_executable(main
     main.c
+    ${SRCS}
 )
-target_link_libraries(main PRIVATE tinyfoc)
+target_link_libraries(main PRIVATE tinyfoc stm8_periph)
+target_include_directories(main PRIVATE
+    Lib
+    .
+)
 
-target_compile_options(main PRIVATE 
+target_compile_options(main PRIVATE
     "--model-large"
     "--stack-auto"
     "--opt-code-size"
-    "-m$(PLATFORM)" 
-    "--std-c99" 
+    "-mstm8"
+    "--std-c99"
     "--nolospre"
-    )
+    "--int-long-reent"
+)
+
+target_link_options(main PRIVATE
+    "--out-fmt-ihx"
+)
+
+set(NEW_NAME "tinyfoc.hex")
+
+add_custom_command(
+    TARGET main 
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy 
+            $<TARGET_FILE:main> 
+            "${CMAKE_SOURCE_DIR}/${NEW_NAME}"
+    COMMENT "Copying binary to project root and renaming to ${NEW_NAME}"
+)
