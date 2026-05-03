@@ -65,7 +65,7 @@ void hall_sensor_init(void) {
 void watchdog_init(void) {
 	IWDG_Enable();
 	IWDG_WriteAccessCmd(IWDG_WriteAccess_Enable);
-	IWDG_SetPrescaler(IWDG_Prescaler_4);
+	IWDG_SetPrescaler(IWDG_Prescaler_16);
 
 	//  Timeout period
 	//  The timeout period can be configured through the IWDG_PR and IWDG_RLR registers. It
@@ -77,10 +77,11 @@ void watchdog_init(void) {
 	//  P = 2 (PR[2:0] + 2)
 	//  R = RLR[7:0]+1
 	//
-	//  0.002 = 2 * (1 / 128000) * 4 * R
-	//  R = 32
-	//  R = 32 means a value of reload register = 31
-	IWDG_SetReload(31);
+	//  0.02 = 2 * (1 / 128000) * 16 * R
+	// R = 0.02 * 128000/(2*16)
+	//  R = 80
+	//  R = 80 means a value of reload register = 79
+	IWDG_SetReload(79);
 	IWDG_ReloadCounter();
 }
 

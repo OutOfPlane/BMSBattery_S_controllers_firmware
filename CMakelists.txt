@@ -5,10 +5,6 @@ project(tinyFOC C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Library from src directory
-add_subdirectory(tinyFOC/src)
-add_subdirectory(StdPeriphLib)
-
 # Source files for the main executable
 file(GLOB SRCS "Lib/*.c")
 
@@ -16,24 +12,34 @@ file(GLOB SRCS "Lib/*.c")
 add_executable(main
     main.c
     ${SRCS}
+    StdPeriphLib/src/stm8s_itc.c
+	StdPeriphLib/src/stm8s_clk.c
+	StdPeriphLib/src/stm8s_iwdg.c
+	StdPeriphLib/src/stm8s_gpio.c
+	StdPeriphLib/src/stm8s_exti.c
+	StdPeriphLib/src/stm8s_uart2.c
+	StdPeriphLib/src/stm8s_tim1.c
+	StdPeriphLib/src/stm8s_tim2.c
+	StdPeriphLib/src/stm8s_adc1.c
+	StdPeriphLib/src/stm8s_flash.c
 )
-target_link_libraries(main PRIVATE tinyfoc stm8_periph)
+target_link_libraries(main PRIVATE)
 target_include_directories(main PRIVATE
     Lib
+    StdPeriphLib/inc
     .
 )
 
 target_compile_options(main PRIVATE
-    "--model-large"
-    "--stack-auto"
-    "--opt-code-size"
     "-mstm8"
     "--std-c99"
     "--nolospre"
-    "--int-long-reent"
 )
 
 target_link_options(main PRIVATE
+    "-mstm8"
+    "--std-c99"
+    "--nolospre"
     "--out-fmt-ihx"
 )
 

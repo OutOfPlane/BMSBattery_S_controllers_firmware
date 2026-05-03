@@ -20,7 +20,6 @@
 #include "pwm.h"
 // #include "update_setpoint.h"
 #include "config.h"
-#include "TinyFOC.h"
 
 // wiring:
 /*
@@ -36,13 +35,10 @@ Green: Display RX
 /////////////////////////////////////////////////////////////////////////////////////////////
 //// Local Variables
 volatile uint16_t microsh = 0;
-
-//tinyFOC storage classes
-FOCMotor bldcMotor;
-FOCDriver PWMDriver;
-Sensor hallSensor;
-CurrentSense dcCurrentSense;
-
+volatile uint16_t adc_VBat = 0;
+volatile uint16_t adc_IBat = 0;
+volatile uint16_t adc_IBat_filt = 0;
+volatile uint16_t adc_throttle = 0;
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 //// Functions prototypes
@@ -69,6 +65,9 @@ void UART2_IRQHandler(void) __interrupt(UART2_IRQHANDLER);
 // Timer1/PWM period interrupt
 void TIM1_UPD_OVF_TRG_BRK_IRQHandler(void) __interrupt(TIM1_UPD_OVF_TRG_BRK_IRQHANDLER)
 {
+	adc_VBat = ((uint16_t)ADC1->DB9RH) << 2 | ADC1->DB9RL;
+	adc_IBat = ((uint16_t)ADC1->DB6RH) << 2 | ADC1->DB6RL;
+	adc_IBat_filt = ((uint16_t)ADC1->DB8RH) << 2 | ADC1->DB8RL;
 	adc_trigger();
 	// clear the interrupt pending bit for TIM1
 	TIM1_ClearITPendingBit(TIM1_IT_UPDATE);
@@ -84,7 +83,7 @@ void TIM2_UPD_OVF_TRG_BRK_IRQHandler(void) __interrupt(TIM2_UPD_OVF_TRG_BRK_IRQH
 uint8_t ui8_rx_buffer[13];
 uint8_t ui8_rx_buffer_counter = 0;
 uint8_t ui8_UARTCounter = 0;
-uint16_t ui16_uart_throttle = 0;
+uint8_t uart_throttle = 0;
 
 #define PKT_MASK 0xC0
 #define PKT_PEDAL 0x00
@@ -98,7 +97,7 @@ void uartInputHandler(void)
 		if ((ui8_rx_buffer[0] & PKT_MASK) == PKT_PEDAL)
 		{
 			// pedal packet
-			ui16_uart_throttle = (ui8_rx_buffer[0] & ~PKT_MASK) << 2; // map 6 bit value to 8 bit value
+			uart_throttle = (ui8_rx_buffer[0] & ~PKT_MASK) << 2; // map 6 bit value to 8 bit value
 		}
 		else if ((ui8_rx_buffer[0] & PKT_MASK) == PKT_BRAKE)
 		{
@@ -117,81 +116,139 @@ void uartInputHandler(void)
 ////////////////////////////Implement TinyFOC library Stubs//////////////////////////////////
 uint32_t _micros(void)
 {
-	return ((uint32_t)microsh) << 16 | (((uint32_t)TIM2->CNTRH) << 8) | ((uint32_t)TIM2->CNTRL);
+	uint32_t tmp = 0;
+	disableInterrupts();
+	tmp = ((uint32_t)microsh) << 16 | (((uint32_t)TIM2->CNTRH) << 8) | ((uint32_t)TIM2->CNTRL);
+	enableInterrupts();
+	return tmp;
 }
 
-void FOCDriver_ll_setPwm(void *params, FIXP dcA, FIXP dcB, FIXP dcC)
+void setPWM(uint8_t dcA, uint8_t dcB, uint8_t dcC)
 {
 	// set final duty_cycle value
-	TIM1_SetCompare1((uint16_t)FIX_MUL(dcA, PWM_PERIOD));
-	TIM1_SetCompare2((uint16_t)FIX_MUL(dcB, PWM_PERIOD));
-	TIM1_SetCompare3((uint16_t)FIX_MUL(dcC, PWM_PERIOD));
+	TIM1_SetCompare1(((uint32_t)dcA * PWM_PERIOD) >> 8);
+	TIM1_SetCompare2(((uint32_t)dcB * PWM_PERIOD) >> 8);
+	TIM1_SetCompare3(((uint32_t)dcC * PWM_PERIOD) >> 8);
 }
 
-bool FOCDriver_ll_init(void *params)
-{
-	pwm_init();
-	return true;
-}
-
-void FOCDriver_ll_enable(void *params)
+void enablePWM(void)
 {
 	TIM1_CtrlPWMOutputs(ENABLE);
 }
 
-void FOCDriver_ll_disable(void *params)
+void disablePWM(void)
 {
 	TIM1_CtrlPWMOutputs(DISABLE);
 }
 
-void Sensor_ll_init(void *param)
+uint8_t getHallState(void)
 {
-	hall_sensor_init();
+	return (GPIO_ReadInputData(HALL_SENSORS__PORT) & (HALL_SENSORS_MASK));
+}
+// hall goes   1    5    4    6    2    3
+//           001  101  100  110  010  011
+//  		   0°  60° 120° 180° 240° 300° #255 = 360°
+//             0   42   85  127  170  212
+//						INV  1  2    3    4   5   6    INV
+uint8_t hall_lookup[] = {0, 0, 170, 212, 85, 42, 127, 0};
+const uint8_t hall_order[] = {1, 5, 4, 6, 2, 3};
+uint8_t getHallAngle(void)
+{
+	return hall_lookup[getHallState()];
 }
 
-void Sensor_ll_read(void *param)
+const int8_t sine_array[] = {
+	0, 3, 6, 9, 12, 15, 18, 22, 25, 28, 31, 34, 37, 40, 43, 46,
+	49, 52, 55, 57, 60, 63, 66, 68, 71, 74, 76, 79, 81, 84, 86,
+	88, 90, 93, 95, 97, 99, 101, 103, 104, 106, 108, 109, 111, 113, 114, 115,
+	117, 118, 119, 120, 121, 122, 123, 123, 124, 125, 125, 126, 126, 126, 126, 126, 127};
+
+int8_t sin(uint8_t angle)
 {
-	Sensor *sns = (Sensor *)param;
-	sns->new_hall_state = (GPIO_ReadInputData(HALL_SENSORS__PORT) & (HALL_SENSORS_MASK));
+	if (angle < 64)
+	{
+		return sine_array[angle];
+	}
+	else if (angle < 128)
+	{
+		return sine_array[127 - angle];
+	}
+	else if (angle < 192)
+	{
+		return -sine_array[angle - 128];
+	}
+	else
+	{
+		return -sine_array[255 - angle];
+	}
 }
 
-bool CurrentSense_ll_init(void *param)
+int8_t cos(uint8_t angle)
 {
-	return true;
+	return sin(angle + 64);
 }
 
-void CurrentSense_ll_readcurrents(void *params, FIXP *phA, FIXP *phB, FIXP *phC)
+void setPWMAngleQ(int8_t val, uint8_t angle)
 {
-	// BLDCState *state = (BLDCState *)params;
-	// *phA = FIX_FROM_FLOAT(state->current_a);
-	// *phB = FIX_FROM_FLOAT(state->current_b);
-	// *phC = FIX_FROM_FLOAT(state->current_c);
+	// val, sin and cos is ranging from -127 to 127
+
+	int16_t sin_a = sin(angle);
+	int16_t cos_a = cos(angle);
+
+	// Inverse park transform
+	int16_t alpha = -sin_a * (int16_t)val; // -sin(angle) * Uq;
+	int16_t beta = cos_a * (int16_t)val;   //  cos(angle) * Uq;
+	beta /= 8;							   // 7/8 = 0.875 is close enough to sqrt(3)/2 = 0.866
+	beta *= 7;
+	// values alpha and beta now range +- 16384
+
+	// Clarke transform
+	uint16_t Ua = alpha + (INT16_MAX / 2);
+	uint16_t Ub = -(alpha >> 1) + beta + (INT16_MAX / 2);
+	uint16_t Uc = -(alpha >> 1) - beta + (INT16_MAX / 2);
+
+	Ua = Ua >> 7;
+	Ub = Ub >> 7;
+	Uc = Uc >> 7;
+	setPWM(Ua, Ub, Uc);
 }
 
-void dbg_write(char val)
+void setPWMAngleD(int8_t val, uint8_t angle)
 {
-	printf("%c", val);
+	// val, sin and cos is ranging from -127 to 127
+
+	int16_t sin_a = sin(angle);
+	int16_t cos_a = cos(angle);
+
+	// Inverse park transform
+	int16_t alpha = cos_a * (int16_t)val; // -sin(angle) * Uq;
+	int16_t beta = sin_a * (int16_t)val;   //  cos(angle) * Uq;
+	beta /= 8;							   // 7/8 = 0.875 is close enough to sqrt(3)/2 = 0.866
+	beta *= 7;
+	// values alpha and beta now range +- 16384
+
+	// Clarke transform
+	uint16_t Ua = alpha + (INT16_MAX / 2);
+	uint16_t Ub = -(alpha >> 1) + beta + (INT16_MAX / 2);
+	uint16_t Uc = -(alpha >> 1) - beta + (INT16_MAX / 2);
+
+	Ua = Ua >> 7;
+	Ub = Ub >> 7;
+	Uc = Uc >> 7;
+	setPWM(Ua, Ub, Uc);
 }
 
-void dbg_newline(void)
-{
-	printf("\n");
-}
+uint32_t lastmicros;
+uint32_t motormicros;
 
-void dbg_print(char* msg)
+enum motorstate
 {
-	printf(msg);
-}
+	MOTOR_OFF,
+	MOTOR_CALIBRATING,
+	MOTOR_READY
+};
 
-void dbg_print_f(FIXP val, int digits)
-{
-	printf("%.*f", digits, FIX_TO_FLOAT(val));
-}
-
-int dbg_read(char* val, int len)
-{
-	return 0;
-}
+#define CAL_REVOLUTIONS 20
 
 int main(void)
 {
@@ -204,45 +261,8 @@ int main(void)
 	timer2_init();
 	eeprom_init();
 	adc_init();
-
-
-	//setup tinyFOC
-	FOCMotor_load_default(&bldcMotor);
-    bldcMotor.pole_pairs = 15;
-    bldcMotor.KV_rating = FIX_FROM_FLOAT(10.0f);
-    bldcMotor.axis_inductance.d = FIX_FROM_FLOAT(0.005f);
-    bldcMotor.axis_inductance.q = FIX_FROM_FLOAT(0.005f);
-    bldcMotor.phase_resistance = FIX_FROM_FLOAT(0.2f);
-
-    FOCDriver_load_default(&PWMDriver);
-    
-    CurrentSense_load_default(&dcCurrentSense);
-    CurrentSense_linkDriver(&dcCurrentSense, &PWMDriver);
-    
-
-    
-    Sensor_load_default(&hallSensor);
-    hallSensor.pp = bldcMotor.pole_pairs;
-    hallSensor.params = &hallSensor; //needed to write back the current hall state
-
-    FOCMotor_linkCurrentSense(&bldcMotor, &dcCurrentSense);
-    FOCMotor_linkDriver(&bldcMotor, &PWMDriver);
-    FOCMotor_linkSensor(&bldcMotor, &hallSensor);
-    bldcMotor.sensor_direction = Direction_UNKNOWN;
-    bldcMotor.zero_electric_angle = NOT_SET;
-    bldcMotor.controller = MotionControlType_velocity;
-    bldcMotor.torque_controller = TorqueControlType_voltage;
-
-    Sensor_init(&hallSensor);
-    FOCDriver_init(&PWMDriver);
-    FOCMotor_init(&bldcMotor);
-    CurrentSense_init(&dcCurrentSense);
-    FOCMotor_updateVoltageLimit(&bldcMotor, FIX_FROM_FLOAT(8.0f));
-    FOCMotor_updateVelocityLimit(&bldcMotor, FIX_FROM_FLOAT(100.0f));
-    FOCMotor_initFOC(&bldcMotor);
-
-    FOCMotor_move(&bldcMotor, FIX_FROM_FLOAT(5.0f)); // Move to 5 rad/s
-
+	pwm_init();
+	hall_sensor_init();
 
 	enableInterrupts();
 
@@ -252,9 +272,93 @@ int main(void)
 	printf("System initialized\r\n");
 #endif
 
+	setPWM(127, 127, 127);
+	
+	enablePWM();
+
+	uint8_t curr_angle = 0;
+	uint8_t state = MOTOR_CALIBRATING;
+	uint16_t cal_revs = 0;
+	uint8_t hall_idx = 0;
+	uint8_t prev_hall = getHallAngle();
+	uint8_t curr_hall = prev_hall;
+	uint16_t hall_lookup_sum[8] = {0};
+	uint16_t hall_lookup_cnt[8] = {0};
+	uint8_t angle_offs = 0;
+
 	while (1)
 	{
-		FOCMotor_loopFOC(&bldcMotor);
+		uartInputHandler();
+		if (_micros() - lastmicros > 10000ul)
+		{
+			lastmicros = _micros();
+			
+		}
+
+		if (state == MOTOR_CALIBRATING)
+		{
+			if (_micros() - motormicros > 1000)
+			{
+				motormicros = _micros();
+				curr_hall = getHallState();
+				setPWMAngleD(30, cal_revs);
+				cal_revs++;
+
+				if (prev_hall != curr_hall)
+				{
+					//we hit a switchpoint
+					hall_lookup_sum[curr_hall] += (cal_revs & 0xFF);
+					hall_lookup_cnt[curr_hall]++;
+				}
+
+				if (cal_revs >= (CAL_REVOLUTIONS * 255))
+				{
+					disablePWM();
+					for (size_t i = 0; i < 6; i++)
+					{
+						uint8_t j = hall_order[i];
+						if(hall_lookup_cnt[j])
+							hall_lookup_sum[j] /= hall_lookup_cnt[j];
+					}
+					uint8_t hall_delta, idx0, idx1;
+
+					for (size_t i = 0; i < 6; i++)
+					{
+						idx0 = hall_order[i];
+						idx1 = hall_order[(i+1)%6];
+						hall_delta = hall_lookup_sum[idx1] - hall_lookup_sum[idx0];
+						if(hall_delta < 128)
+						{
+							//normal order
+							hall_lookup[hall_order[idx0]] = hall_lookup_sum[hall_order[idx0]] + (hall_delta >> 1);
+						}else{
+							//reversed order
+							hall_delta = hall_lookup_sum[idx0] - hall_lookup_sum[idx1];
+							hall_lookup[hall_order[idx1]] = hall_lookup_sum[hall_order[idx1]] + (hall_delta >> 1);
+						}
+					}
+					
+					for (size_t i = 0; i < 8; i++)
+					{
+						printf("Hall: %d %d\n", i, hall_lookup[i]);
+						IWDG->KR = IWDG_KEY_REFRESH; // we are still alive
+					}
+					
+					state = MOTOR_READY;
+					enablePWM();
+				}
+				prev_hall = curr_hall;
+			}
+		}
+		if (state == MOTOR_READY)
+		{
+			if (_micros() - motormicros > 1000)
+			{
+				motormicros = _micros();
+				setPWMAngleQ(uart_throttle >> 1, getHallAngle());
+			}
+		}
+
 		uart_send_if_avail();
 		// reset watchdog
 		IWDG->KR = IWDG_KEY_REFRESH; // we are still alive

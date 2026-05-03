@@ -136,7 +136,7 @@ void uart_fill_rx_packet_buffer(uint8_t *buffer, uint8_t bufferSize, uint8_t *bu
 void uart_init(void)
 {
     UART2_DeInit();
-    UART2_Init((uint32_t)115200,
+    UART2_Init((uint32_t)19200,
                UART2_WORDLENGTH_8D,
                UART2_STOPBITS_1,
                UART2_PARITY_NO,
