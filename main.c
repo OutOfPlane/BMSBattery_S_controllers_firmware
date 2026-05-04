@@ -66,15 +66,15 @@ uint8_t motor_cmd = 0;
 
 // hall goes   1    5    4    6    2    3
 //           001  101  100  110  010  011
-//  		   0°  60° 120° 180° 240° 300° #255 = 360°
-//             0   42   85  127  170  212
-//						INV  1  2    3    4   5   6    INV
-uint8_t hall_lookup[] = {0, 0, 170, 212, 85, 42, 127, 0};
-const uint8_t hall_order[] = {1, 5, 4, 6, 2, 3};
+//  		   0°  60° 120° 180° 240° 300°
+const uint8_t hall_sector[] = {6, 4, 2, 3, 0, 5, 1, 6};
+const uint8_t commutation_phases_en[] = {5, 3, 6, 5, 3, 6, 0};
+const uint8_t commutation_phases_fwd[] = {4, 2, 2, 1, 1, 4, 0};
+const uint8_t commutation_phases_rev[] = {1, 1, 4, 4, 2, 2, 0};
 uint32_t last_hall_update = 0;
 uint8_t last_hall_state = 0;
 uint32_t hall_dt = 0;
-
+uint8_t new_hall_cnt = 0;
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 //// Functions prototypes
@@ -126,7 +126,7 @@ void uartInputHandler(void)
 		if ((ui8_rx & PKT_MASK) == PKT_PEDAL)
 		{
 			// pedal packet
-			uart_throttle = (ui8_rx & ~PKT_MASK) << 1; // map 6 bit value to 7 bit value
+			uart_throttle = (ui8_rx & ~PKT_MASK) << 2; // map 6 bit value to 7 bit value
 		}
 		else if ((ui8_rx & PKT_MASK) == PKT_CMD)
 		{
@@ -180,101 +180,62 @@ uint8_t getHallState(void)
 	uint8_t new_hall_state = (GPIO_ReadInputData(HALL_SENSORS__PORT) & (HALL_SENSORS_MASK));
 	if(last_hall_state != new_hall_state)
 	{
-		hall_dt = _micros() - last_hall_update;
-		last_hall_update += hall_dt;
-		if(hall_dt > 16000)
+		new_hall_cnt++;
+		if(new_hall_cnt == 10)
 		{
-			hall_dt = 0; // no speed available
+			new_hall_cnt = 0;
+			hall_dt = _micros() - last_hall_update;
+			last_hall_update += hall_dt;
+			if(hall_dt > 16000)
+			{
+				hall_dt = 0; // no speed available
+			}
+			last_hall_state = new_hall_state;
 		}
-		last_hall_state = new_hall_state;
+		
+	}else{
+		new_hall_cnt = 0;
 	}
 	return new_hall_state;
 }
-uint8_t hall_offset = 0;
-uint8_t getHallAngle(void)
-{
-	return hall_lookup[getHallState()] - hall_offset;
-}
 
-const int8_t sine_array[] = {
-	0, 3, 6, 9, 12, 15, 18, 22, 25, 28, 31, 34, 37, 40, 43, 46,
-	49, 52, 55, 57, 60, 63, 66, 68, 71, 74, 76, 79, 81, 84, 86,
-	88, 90, 93, 95, 97, 99, 101, 103, 104, 106, 108, 109, 111, 113, 114, 115,
-	117, 118, 119, 120, 121, 122, 123, 123, 124, 125, 125, 126, 126, 126, 126, 126, 127};
-
-int8_t sin(uint8_t angle)
+void setPWMPower(uint8_t val, uint8_t dir, uint8_t hallstate)
 {
-	if (angle < 64)
-	{
-		return sine_array[angle];
-	}
-	else if (angle < 128)
-	{
-		return sine_array[127 - angle];
-	}
-	else if (angle < 192)
-	{
-		return -sine_array[angle - 128];
-	}
+	uint8_t sector, ch_en, ch_pwrd, chA, chB, chC;
+	sector = hall_sector[hallstate];
+	ch_en = commutation_phases_en[sector];
+	chA = 0;
+	chB = 0;
+	chC = 0;
+
+	if(dir == 0)
+		ch_pwrd = commutation_phases_fwd[sector];
 	else
-	{
-		return -sine_array[255 - angle];
-	}
-}
+		ch_pwrd = commutation_phases_rev[sector];
 
-int8_t cos(uint8_t angle)
-{
-	return sin(angle + 64);
-}
+	if(ch_en & 4)
+		TIM1_CCxCmd(TIM1_CHANNEL_1, ENABLE);
+	else
+		TIM1_CCxCmd(TIM1_CHANNEL_1, DISABLE);
 
-void setPWMAngleQ(int8_t val, uint8_t angle)
-{
-	// val, sin and cos is ranging from -127 to 127
+	if(ch_en & 2)
+		TIM1_CCxCmd(TIM1_CHANNEL_2, ENABLE);
+	else
+		TIM1_CCxCmd(TIM1_CHANNEL_2, DISABLE);
 
-	int16_t sin_a = sin(angle);
-	int16_t cos_a = cos(angle);
+	if(ch_en & 1)
+		TIM1_CCxCmd(TIM1_CHANNEL_3, ENABLE);
+	else
+		TIM1_CCxCmd(TIM1_CHANNEL_3, DISABLE);
 
-	// Inverse park transform
-	int16_t alpha = -sin_a * (int16_t)val; // -sin(angle) * Uq;
-	int16_t beta = cos_a * (int16_t)val;   //  cos(angle) * Uq;
-	beta /= 8;							   // 7/8 = 0.875 is close enough to sqrt(3)/2 = 0.866
-	beta *= 7;
-	// values alpha and beta now range +- 16384
+	if(ch_pwrd & 4)
+		chA = val;
+	if(ch_pwrd & 2)
+		chB = val;
+	if(ch_pwrd & 1)
+		chC = val;
 
-	// Clarke transform
-	uint16_t Ua = alpha + (INT16_MAX / 2);
-	uint16_t Ub = -(alpha >> 1) + beta + (INT16_MAX / 2);
-	uint16_t Uc = -(alpha >> 1) - beta + (INT16_MAX / 2);
-
-	Ua = Ua >> 7;
-	Ub = Ub >> 7;
-	Uc = Uc >> 7;
-	setPWM(Ua, Ub, Uc);
-}
-
-void setPWMAngleD(int8_t val, uint8_t angle)
-{
-	// val, sin and cos is ranging from -127 to 127
-
-	int16_t sin_a = sin(angle);
-	int16_t cos_a = cos(angle);
-
-	// Inverse park transform
-	int16_t alpha = cos_a * (int16_t)val; // -sin(angle) * Uq;
-	int16_t beta = sin_a * (int16_t)val;   //  cos(angle) * Uq;
-	beta /= 8;							   // 7/8 = 0.875 is close enough to sqrt(3)/2 = 0.866
-	beta *= 7;
-	// values alpha and beta now range +- 16384
-
-	// Clarke transform
-	uint16_t Ua = alpha + (INT16_MAX / 2);
-	uint16_t Ub = -(alpha >> 1) + beta + (INT16_MAX / 2);
-	uint16_t Uc = -(alpha >> 1) - beta + (INT16_MAX / 2);
-
-	Ua = Ua >> 7;
-	Ub = Ub >> 7;
-	Uc = Uc >> 7;
-	setPWM(Ua, Ub, Uc);
+	setPWM(chA, chB, chC);	
 }
 
 
@@ -299,16 +260,10 @@ int main(void)
 	printf("System initialized\r\n");
 #endif
 
-	setPWM(127, 127, 127);
+	setPWM(0, 0, 0);
 
 	enablePWM();
 
-	uint8_t curr_angle = 0;
-	uint16_t cal_revs = 0;
-	uint8_t prev_hall = getHallAngle();
-	uint8_t curr_hall = prev_hall;
-	uint16_t hall_lookup_sum[8] = {0};
-	uint16_t hall_lookup_cnt[8] = {0};
 
 	while (1)
 	{
@@ -316,92 +271,27 @@ int main(void)
 		if (_micros() - lastmicros > 100000ul)
 		{
 			lastmicros = _micros();
+			if(_micros() - last_hall_update > 16000)
+			{
+				hall_dt = 0; // no speed available
+			}
+
 			uartWrite(adc_IBat_filt>>8);
 			uartWrite(adc_IBat_filt & 0xFF);
 
 			uartWrite(hall_dt>>8);
-			uartWrite(hall_dt&0xFF);
-			
+			uartWrite(hall_dt&0xFF);			
 		}
 
-		if(motor_cmd == CMD_CAL)
-		{
-			motor_cmd = 0;
-			cal_revs = 0;
-			for (size_t i = 0; i < 6; i++)
-			{
-				uint8_t j = hall_order[i];
-				hall_lookup_cnt[j] = 0;
-				hall_lookup_sum[j] = 0;
-			}
-			hall_offset = 0;
-			state = MOTOR_CALIBRATING;
-		}
-
-		if (state == MOTOR_CALIBRATING)
-		{
-			setPWMAngleQ(40, getHallAngle());
-
-			if (_micros() - motormicros > 1000000)
-			{
-				motormicros = _micros();
-				hall_offset++;
-				if(hall_offset == 64){
-					state = MOTOR_READY;
-				}
-			}
-			// 	curr_hall = getHallState();
-			// 	setPWMAngleD(60, cal_revs);
-			// 	cal_revs++;
-
-			// 	if (prev_hall != curr_hall)
-			// 	{
-			// 		//we hit a switchpoint
-			// 		hall_lookup_sum[curr_hall] += (cal_revs & 0xFF);
-			// 		hall_lookup_cnt[curr_hall]++;
-			// 	}
-
-			// 	if (cal_revs >= (CAL_REVOLUTIONS * 255))
-			// 	{
-			// 		disablePWM();
-			// 		for (size_t i = 0; i < 6; i++)
-			// 		{
-			// 			uint8_t j = hall_order[i];
-			// 			if(hall_lookup_cnt[j])
-			// 				hall_lookup_sum[j] /= hall_lookup_cnt[j];
-			// 		}
-			// 		uint8_t hall_delta, idx0, idx1;
-
-			// 		for (size_t i = 0; i < 6; i++)
-			// 		{
-			// 			idx0 = hall_order[i];
-			// 			idx1 = hall_order[(i+1)%6];
-			// 			hall_delta = hall_lookup_sum[idx1] - hall_lookup_sum[idx0];
-			// 			if(hall_delta < 128)
-			// 			{
-			// 				//normal order
-			// 				hall_lookup[hall_order[idx0]] = hall_lookup_sum[hall_order[idx0]] + (hall_delta >> 1);
-			// 			}else{
-			// 				//reversed order
-			// 				hall_delta = hall_lookup_sum[idx0] - hall_lookup_sum[idx1];
-			// 				hall_lookup[hall_order[idx1]] = hall_lookup_sum[hall_order[idx1]] + (hall_delta >> 1);
-			// 			}
-			// 		}
-					
-			// 		state = MOTOR_READY;
-			// 		enablePWM();
-			// 	}
-			// 	prev_hall = curr_hall;
-			// }
-		}
+		
 		if (state == MOTOR_READY)
 		{
 			//do the pwm controller as fast as possible
 			if(motor_dir == 0)
 			{
-				setPWMAngleQ(-(uart_throttle), getHallAngle());
+				setPWMPower(uart_throttle, 0, getHallState());
 			}else{
-				setPWMAngleQ(uart_throttle, getHallAngle());
+				setPWMPower(uart_throttle, 1, getHallState());
 			}
 		}
 		// reset watchdog
