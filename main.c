@@ -40,6 +40,42 @@ volatile uint16_t adc_IBat = 0;
 volatile uint16_t adc_IBat_filt = 0;
 volatile uint16_t adc_throttle = 0;
 
+uint32_t lastmicros;
+uint32_t motormicros;
+
+enum motorstate
+{
+	MOTOR_OFF,
+	MOTOR_CALIBRATING,
+	MOTOR_READY
+};
+enum motorstate state = MOTOR_READY;
+uint8_t motor_dir = 0; //0 fwd, 1 rev
+#define CAL_REVOLUTIONS 20
+
+uint8_t ui8_rx;
+uint8_t uart_throttle = 0;
+uint8_t motor_cmd = 0;
+#define PKT_MASK 0xC0
+#define PKT_PEDAL 0x00
+#define PKT_CMD 0x40
+#define CMD_CAL 0x01
+#define CMD_FWD 0x02
+#define CMD_REV 0x03
+
+
+// hall goes   1    5    4    6    2    3
+//           001  101  100  110  010  011
+//  		   0°  60° 120° 180° 240° 300° #255 = 360°
+//             0   42   85  127  170  212
+//						INV  1  2    3    4   5   6    INV
+uint8_t hall_lookup[] = {0, 0, 170, 212, 85, 42, 127, 0};
+const uint8_t hall_order[] = {1, 5, 4, 6, 2, 3};
+uint32_t last_hall_update = 0;
+uint8_t last_hall_state = 0;
+uint32_t hall_dt = 0;
+
+
 /////////////////////////////////////////////////////////////////////////////////////////////
 //// Functions prototypes
 
@@ -80,36 +116,34 @@ void TIM2_UPD_OVF_TRG_BRK_IRQHandler(void) __interrupt(TIM2_UPD_OVF_TRG_BRK_IRQH
 	TIM2_ClearITPendingBit(TIM2_IT_UPDATE);
 }
 
-uint8_t ui8_rx_buffer[13];
-uint8_t ui8_rx_buffer_counter = 0;
-uint8_t ui8_UARTCounter = 0;
-uint8_t uart_throttle = 0;
 
-#define PKT_MASK 0xC0
-#define PKT_PEDAL 0x00
-#define PKT_BRAKE 0x40
 
 void uartInputHandler(void)
 {
-	uart_fill_rx_packet_buffer(ui8_rx_buffer, 1, &ui8_UARTCounter);
-	if (ui8_UARTCounter)
+	if(byte_avail_at_position()) //uart has data
 	{
-		if ((ui8_rx_buffer[0] & PKT_MASK) == PKT_PEDAL)
+		ui8_rx = uart_get_buffered();
+		if ((ui8_rx & PKT_MASK) == PKT_PEDAL)
 		{
 			// pedal packet
-			uart_throttle = (ui8_rx_buffer[0] & ~PKT_MASK) << 2; // map 6 bit value to 8 bit value
+			uart_throttle = (ui8_rx & ~PKT_MASK) << 1; // map 6 bit value to 7 bit value
 		}
-		else if ((ui8_rx_buffer[0] & PKT_MASK) == PKT_BRAKE)
+		else if ((ui8_rx & PKT_MASK) == PKT_CMD)
 		{
-			// brake packet
-			// if(ui8_rx_buffer[0] & ~PKT_MASK > 0) {
-			// 	brake_set();
-			// } else {
-			// 	brake_clear();
-			// }
+			// command packet
+			motor_cmd = (ui8_rx & ~PKT_MASK);
 		}
 	}
-	ui8_UARTCounter = 0;
+}
+
+void uartWrite(uint8_t c)
+{
+	// Write a character to the UART2
+    UART2_SendData8(c);
+
+    // Loop until the end of transmission
+    while (UART2_GetFlagStatus(UART2_FLAG_TXE) == RESET)
+        ;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -143,18 +177,23 @@ void disablePWM(void)
 
 uint8_t getHallState(void)
 {
-	return (GPIO_ReadInputData(HALL_SENSORS__PORT) & (HALL_SENSORS_MASK));
+	uint8_t new_hall_state = (GPIO_ReadInputData(HALL_SENSORS__PORT) & (HALL_SENSORS_MASK));
+	if(last_hall_state != new_hall_state)
+	{
+		hall_dt = _micros() - last_hall_update;
+		last_hall_update += hall_dt;
+		if(hall_dt > 16000)
+		{
+			hall_dt = 0; // no speed available
+		}
+		last_hall_state = new_hall_state;
+	}
+	return new_hall_state;
 }
-// hall goes   1    5    4    6    2    3
-//           001  101  100  110  010  011
-//  		   0°  60° 120° 180° 240° 300° #255 = 360°
-//             0   42   85  127  170  212
-//						INV  1  2    3    4   5   6    INV
-uint8_t hall_lookup[] = {0, 0, 170, 212, 85, 42, 127, 0};
-const uint8_t hall_order[] = {1, 5, 4, 6, 2, 3};
+uint8_t hall_offset = 0;
 uint8_t getHallAngle(void)
 {
-	return hall_lookup[getHallState()];
+	return hall_lookup[getHallState()] - hall_offset;
 }
 
 const int8_t sine_array[] = {
@@ -238,17 +277,7 @@ void setPWMAngleD(int8_t val, uint8_t angle)
 	setPWM(Ua, Ub, Uc);
 }
 
-uint32_t lastmicros;
-uint32_t motormicros;
 
-enum motorstate
-{
-	MOTOR_OFF,
-	MOTOR_CALIBRATING,
-	MOTOR_READY
-};
-
-#define CAL_REVOLUTIONS 20
 
 int main(void)
 {
@@ -256,8 +285,6 @@ int main(void)
 	CLK_HSIPrescalerConfig(CLK_PRESCALER_HSIDIV1);
 	gpio_init();
 	uart_init();
-	debug_pin_init();
-	light_pin_init();
 	timer2_init();
 	eeprom_init();
 	adc_init();
@@ -273,93 +300,110 @@ int main(void)
 #endif
 
 	setPWM(127, 127, 127);
-	
+
 	enablePWM();
 
 	uint8_t curr_angle = 0;
-	uint8_t state = MOTOR_CALIBRATING;
 	uint16_t cal_revs = 0;
-	uint8_t hall_idx = 0;
 	uint8_t prev_hall = getHallAngle();
 	uint8_t curr_hall = prev_hall;
 	uint16_t hall_lookup_sum[8] = {0};
 	uint16_t hall_lookup_cnt[8] = {0};
-	uint8_t angle_offs = 0;
 
 	while (1)
 	{
 		uartInputHandler();
-		if (_micros() - lastmicros > 10000ul)
+		if (_micros() - lastmicros > 100000ul)
 		{
 			lastmicros = _micros();
+			uartWrite(adc_IBat_filt>>8);
+			uartWrite(adc_IBat_filt & 0xFF);
+
+			uartWrite(hall_dt>>8);
+			uartWrite(hall_dt&0xFF);
 			
+		}
+
+		if(motor_cmd == CMD_CAL)
+		{
+			motor_cmd = 0;
+			cal_revs = 0;
+			for (size_t i = 0; i < 6; i++)
+			{
+				uint8_t j = hall_order[i];
+				hall_lookup_cnt[j] = 0;
+				hall_lookup_sum[j] = 0;
+			}
+			hall_offset = 0;
+			state = MOTOR_CALIBRATING;
 		}
 
 		if (state == MOTOR_CALIBRATING)
 		{
-			if (_micros() - motormicros > 1000)
+			setPWMAngleQ(40, getHallAngle());
+
+			if (_micros() - motormicros > 1000000)
 			{
 				motormicros = _micros();
-				curr_hall = getHallState();
-				setPWMAngleD(30, cal_revs);
-				cal_revs++;
-
-				if (prev_hall != curr_hall)
-				{
-					//we hit a switchpoint
-					hall_lookup_sum[curr_hall] += (cal_revs & 0xFF);
-					hall_lookup_cnt[curr_hall]++;
-				}
-
-				if (cal_revs >= (CAL_REVOLUTIONS * 255))
-				{
-					disablePWM();
-					for (size_t i = 0; i < 6; i++)
-					{
-						uint8_t j = hall_order[i];
-						if(hall_lookup_cnt[j])
-							hall_lookup_sum[j] /= hall_lookup_cnt[j];
-					}
-					uint8_t hall_delta, idx0, idx1;
-
-					for (size_t i = 0; i < 6; i++)
-					{
-						idx0 = hall_order[i];
-						idx1 = hall_order[(i+1)%6];
-						hall_delta = hall_lookup_sum[idx1] - hall_lookup_sum[idx0];
-						if(hall_delta < 128)
-						{
-							//normal order
-							hall_lookup[hall_order[idx0]] = hall_lookup_sum[hall_order[idx0]] + (hall_delta >> 1);
-						}else{
-							//reversed order
-							hall_delta = hall_lookup_sum[idx0] - hall_lookup_sum[idx1];
-							hall_lookup[hall_order[idx1]] = hall_lookup_sum[hall_order[idx1]] + (hall_delta >> 1);
-						}
-					}
-					
-					for (size_t i = 0; i < 8; i++)
-					{
-						printf("Hall: %d %d\n", i, hall_lookup[i]);
-						IWDG->KR = IWDG_KEY_REFRESH; // we are still alive
-					}
-					
+				hall_offset++;
+				if(hall_offset == 64){
 					state = MOTOR_READY;
-					enablePWM();
 				}
-				prev_hall = curr_hall;
 			}
+			// 	curr_hall = getHallState();
+			// 	setPWMAngleD(60, cal_revs);
+			// 	cal_revs++;
+
+			// 	if (prev_hall != curr_hall)
+			// 	{
+			// 		//we hit a switchpoint
+			// 		hall_lookup_sum[curr_hall] += (cal_revs & 0xFF);
+			// 		hall_lookup_cnt[curr_hall]++;
+			// 	}
+
+			// 	if (cal_revs >= (CAL_REVOLUTIONS * 255))
+			// 	{
+			// 		disablePWM();
+			// 		for (size_t i = 0; i < 6; i++)
+			// 		{
+			// 			uint8_t j = hall_order[i];
+			// 			if(hall_lookup_cnt[j])
+			// 				hall_lookup_sum[j] /= hall_lookup_cnt[j];
+			// 		}
+			// 		uint8_t hall_delta, idx0, idx1;
+
+			// 		for (size_t i = 0; i < 6; i++)
+			// 		{
+			// 			idx0 = hall_order[i];
+			// 			idx1 = hall_order[(i+1)%6];
+			// 			hall_delta = hall_lookup_sum[idx1] - hall_lookup_sum[idx0];
+			// 			if(hall_delta < 128)
+			// 			{
+			// 				//normal order
+			// 				hall_lookup[hall_order[idx0]] = hall_lookup_sum[hall_order[idx0]] + (hall_delta >> 1);
+			// 			}else{
+			// 				//reversed order
+			// 				hall_delta = hall_lookup_sum[idx0] - hall_lookup_sum[idx1];
+			// 				hall_lookup[hall_order[idx1]] = hall_lookup_sum[hall_order[idx1]] + (hall_delta >> 1);
+			// 			}
+			// 		}
+					
+			// 		state = MOTOR_READY;
+			// 		enablePWM();
+			// 	}
+			// 	prev_hall = curr_hall;
+			// }
 		}
 		if (state == MOTOR_READY)
 		{
-			if (_micros() - motormicros > 1000)
+			//do the pwm controller as fast as possible
+			if(motor_dir == 0)
 			{
-				motormicros = _micros();
-				setPWMAngleQ(uart_throttle >> 1, getHallAngle());
+				setPWMAngleQ(-(uart_throttle), getHallAngle());
+			}else{
+				setPWMAngleQ(uart_throttle, getHallAngle());
 			}
 		}
-
-		uart_send_if_avail();
 		// reset watchdog
 		IWDG->KR = IWDG_KEY_REFRESH; // we are still alive
 	} // end of while(1) loop
