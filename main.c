@@ -50,7 +50,7 @@ enum motorstate
 	MOTOR_READY
 };
 enum motorstate state = MOTOR_READY;
-uint8_t motor_dir = 0; //0 fwd, 1 rev
+uint8_t motor_dir = 0; // 0 fwd, 1 rev
 #define CAL_REVOLUTIONS 20
 
 uint8_t ui8_rx;
@@ -62,7 +62,6 @@ uint8_t motor_cmd = 0;
 #define CMD_CAL 0x01
 #define CMD_FWD 0x02
 #define CMD_REV 0x03
-
 
 // hall goes   1    5    4    6    2    3
 //           001  101  100  110  010  011
@@ -116,11 +115,9 @@ void TIM2_UPD_OVF_TRG_BRK_IRQHandler(void) __interrupt(TIM2_UPD_OVF_TRG_BRK_IRQH
 	TIM2_ClearITPendingBit(TIM2_IT_UPDATE);
 }
 
-
-
 void uartInputHandler(void)
 {
-	if(byte_avail_at_position()) //uart has data
+	if (byte_avail_at_position()) // uart has data
 	{
 		ui8_rx = uart_get_buffered();
 		if ((ui8_rx & PKT_MASK) == PKT_PEDAL)
@@ -139,11 +136,11 @@ void uartInputHandler(void)
 void uartWrite(uint8_t c)
 {
 	// Write a character to the UART2
-    UART2_SendData8(c);
+	UART2_SendData8(c);
 
-    // Loop until the end of transmission
-    while (UART2_GetFlagStatus(UART2_FLAG_TXE) == RESET)
-        ;
+	// Loop until the end of transmission
+	while (UART2_GetFlagStatus(UART2_FLAG_TXE) == RESET)
+		;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -178,22 +175,23 @@ void disablePWM(void)
 uint8_t getHallState(void)
 {
 	uint8_t new_hall_state = (GPIO_ReadInputData(HALL_SENSORS__PORT) & (HALL_SENSORS_MASK));
-	if(last_hall_state != new_hall_state)
+	if (last_hall_state != new_hall_state)
 	{
 		new_hall_cnt++;
-		if(new_hall_cnt == 10)
+		if (new_hall_cnt == 10)
 		{
 			new_hall_cnt = 0;
 			hall_dt = _micros() - last_hall_update;
 			last_hall_update += hall_dt;
-			if(hall_dt > 16000)
+			if (hall_dt > 16000)
 			{
 				hall_dt = 0; // no speed available
 			}
 			last_hall_state = new_hall_state;
 		}
-		
-	}else{
+	}
+	else
+	{
 		new_hall_cnt = 0;
 	}
 	return new_hall_state;
@@ -208,40 +206,39 @@ void setPWMPower(uint8_t val, uint8_t dir, uint8_t hallstate)
 	chB = 0;
 	chC = 0;
 
-	if(dir == 0)
+	if (dir == 0)
 		ch_pwrd = commutation_phases_fwd[sector];
 	else
 		ch_pwrd = commutation_phases_rev[sector];
 
-	if(ch_en & 4)
+	if (ch_en & 4)
 		TIM1_CCxCmd(TIM1_CHANNEL_1, ENABLE);
 	else
 		TIM1_CCxCmd(TIM1_CHANNEL_1, DISABLE);
 
-	if(ch_en & 2)
+	if (ch_en & 2)
 		TIM1_CCxCmd(TIM1_CHANNEL_2, ENABLE);
 	else
 		TIM1_CCxCmd(TIM1_CHANNEL_2, DISABLE);
 
-	if(ch_en & 1)
+	if (ch_en & 1)
 		TIM1_CCxCmd(TIM1_CHANNEL_3, ENABLE);
 	else
 		TIM1_CCxCmd(TIM1_CHANNEL_3, DISABLE);
 
-	if(ch_pwrd & 4)
+	if (ch_pwrd & 4)
 		chA = val;
-	if(ch_pwrd & 2)
+	if (ch_pwrd & 2)
 		chB = val;
-	if(ch_pwrd & 1)
+	if (ch_pwrd & 1)
 		chC = val;
 
-	setPWM(chA, chB, chC);	
+	setPWM(chA, chB, chC);
 }
-
-
 
 int main(void)
 {
+	uint8_t hall_state = 0;
 	// set clock at the max 16MHz
 	CLK_HSIPrescalerConfig(CLK_PRESCALER_HSIDIV1);
 	gpio_init();
@@ -264,34 +261,46 @@ int main(void)
 
 	enablePWM();
 
-
 	while (1)
 	{
+		hall_state = getHallState();
 		uartInputHandler();
 		if (_micros() - lastmicros > 100000ul)
 		{
 			lastmicros = _micros();
-			if(_micros() - last_hall_update > 16000)
+			if (_micros() - last_hall_update > 16000)
 			{
 				hall_dt = 0; // no speed available
 			}
 
-			uartWrite(adc_IBat_filt>>8);
+			uartWrite(adc_IBat_filt >> 8);
 			uartWrite(adc_IBat_filt & 0xFF);
 
-			uartWrite(hall_dt>>8);
-			uartWrite(hall_dt&0xFF);			
+			uartWrite(hall_dt >> 8);
+			uartWrite(hall_dt & 0xFF);
 		}
 
-		
 		if (state == MOTOR_READY)
 		{
-			//do the pwm controller as fast as possible
-			if(motor_dir == 0)
+			// do the pwm controller as fast as possible
+			if (uart_throttle < 20 && hall_dt == 0)
 			{
-				setPWMPower(uart_throttle, 0, getHallState());
-			}else{
-				setPWMPower(uart_throttle, 1, getHallState());
+				// activate hard brake
+				setPWM(0, 0, 0);
+				TIM1_CCxCmd(TIM1_CHANNEL_1, ENABLE);
+				TIM1_CCxCmd(TIM1_CHANNEL_2, ENABLE);
+				TIM1_CCxCmd(TIM1_CHANNEL_3, ENABLE);
+			}
+			else
+			{
+				if (motor_dir == 1)
+				{
+					setPWMPower((uart_throttle), 0, hall_state);
+				}
+				else
+				{
+					setPWMPower((uart_throttle), 1, hall_state);
+				}
 			}
 		}
 		// reset watchdog
